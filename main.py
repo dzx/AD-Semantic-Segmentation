@@ -26,7 +26,6 @@ def load_vgg(sess, vgg_path):
     :param vgg_path: Path to vgg folder, containing "variables/" and "saved_model.pb"
     :return: Tuple of Tensors from VGG model (image_input, keep_prob, layer3_out, layer4_out, layer7_out)
     """
-    # TODO: Implement function
     #   Use tf.saved_model.loader.load to load the model and weights
     vgg_tag = 'vgg16'
     vgg_input_tensor_name = 'image_input:0'
@@ -41,8 +40,6 @@ def load_vgg(sess, vgg_path):
     layer3_out = graph.get_tensor_by_name(vgg_layer3_out_tensor_name)
     layer4_out = graph.get_tensor_by_name(vgg_layer4_out_tensor_name)
     layer7_out = graph.get_tensor_by_name(vgg_layer7_out_tensor_name)
-#    for n in graph.collections:
-#        print(n, graph.get_collection_ref(n))
 
     return image_input, keep_prob, layer3_out, layer4_out, layer7_out
 tests.test_load_vgg(load_vgg, tf)
@@ -92,7 +89,7 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     :return: Tuple of (logits, train_op, cross_entropy_loss)
     """
     global iou_val, iou_op
-    logits = tf.reshape(nn_last_layer, (-1, num_classes))
+    logits = tf.reshape(nn_last_layer, (-1, num_classes), name="logits")
     cross_entropy_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=correct_label))
     iou_val, iou_op = tf.metrics.mean_iou(labels=tf.argmax(correct_label, axis=-1), 
                                           predictions=tf.argmax(nn_last_layer, axis=-1), 
@@ -185,9 +182,13 @@ def run():
         train_nn(sess, num_epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, 
                  input_image, labels, keep_prob, learning_rate, iou_op, iou_val)
         writter.close()
-
-        # TODO: Save inference data using helper.save_inference_samples
-        helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, input_image)
+        
+        builder = tf.saved_model.builder.SavedModelBuilder(os.path.join(data_dir, 'trained'))
+        builder.add_meta_graph_and_variables(sess, ['VGG_Trained'])
+        builder.save()
+        print("Trained model saved")
+        # Save inference data using helper.save_inference_samples
+       # helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, input_image)
 
         # OPTIONAL: Apply the trained model to a video
 
