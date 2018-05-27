@@ -11,6 +11,7 @@ from glob import glob
 from urllib.request import urlretrieve
 from tqdm import tqdm
 from moviepy.editor import VideoFileClip
+from sklearn.model_selection import train_test_split
 
 
 class DLProgress(tqdm):
@@ -58,48 +59,64 @@ def maybe_download_pretrained_vgg(data_dir):
         # Remove zip file to save space
         os.remove(os.path.join(vgg_path, vgg_filename))
 
+def gen_train_val_folds(data_folder, tst_size=None, seed=None):
+    image_paths = glob(os.path.join(data_folder, 'CameraRGB', '*.png'))
+    label_paths = glob(os.path.join(data_folder, 'CameraSeg', '*.png'))
+    indices = [i for i in range(len(image_paths))]
+    if tst_size != None:
+        indices = train_test_split(indices, test_size=tst_size, random_state=seed)
+    return image_paths, label_paths, indices
 
-def gen_batch_function(data_folder, image_shape):
+
+def gen_batch_function(image_paths, label_paths, indexes=None):
     """
     Generate function to create batches of training data
     :param data_folder: Path to folder that contains all the datasets
     :param image_shape: Tuple - Shape of image
+    :param indexes:
     :return:
     """
+    print('Indexes',len(indexes))
+    if indexes is None:
+        indexes = [i for i in range(len(image_paths))]
     def get_batches_fn(batch_size):
         """
         Create batches of training data
         :param batch_size: Batch Size
         :return: Batches of training data
         """
-        image_paths = glob(os.path.join(data_folder, 'image_2', '*.png'))
-        label_paths = {
-            re.sub(r'_(lane|road)_', '_', os.path.basename(path)): path
-            for path in glob(os.path.join(data_folder, 'gt_image_2', '*_road_*.png'))}
-        background_color = np.array([255, 0, 0])
-
-        random.shuffle(image_paths)
-        for batch_i in range(0, len(image_paths), batch_size):
+#        background_color = np.array([255, 0, 0])
+        random.shuffle(indexes)
+        print("get_batches set size:", len(indexes))
+        for batch_i in range(0, len(indexes), batch_size):
             images = []
             gt_images = []
-            for image_file in image_paths[batch_i:batch_i+batch_size]:
-                gt_image_file = label_paths[os.path.basename(image_file)]
+            for i in indexes[batch_i:batch_i+batch_size]:
+                image_file = image_paths[i]
+                gt_image_file = label_paths[i]
 
-                image = scipy.misc.imresize(scipy.misc.imread(image_file), image_shape)
-                gt_image = scipy.misc.imresize(scipy.misc.imread(gt_image_file), image_shape)
+                image = scipy.misc.imread(image_file) #, image_shape
+                gt_image = scipy.misc.imread(gt_image_file) #, image_shape)
+                gt_image = gt_image[:,:,0]
 
-                gt_bg = np.all(gt_image == background_color, axis=2)
-                gt_bg = gt_bg.reshape(*gt_bg.shape, 1)
-                gt_image = np.concatenate((gt_bg, np.invert(gt_bg)), axis=2)
+                gt_road = np.any(np.stack((gt_image == 6, gt_image==7), axis=2), axis=2)
+                gt_vehicles = gt_image == 10
+                gt_vehicles[496:] = False
+                gt_objects = np.stack((gt_road, gt_vehicles), axis=2)
+                gt_other = np.logical_not(np.any(gt_objects, axis=2))
+                gt = np.stack((gt_road, gt_vehicles, gt_other), axis=2)
+#                gt_bg = np.all(gt_image == background_color, axis=2)
+#                gt_bg = gt_bg.reshape(*gt_bg.shape, 1)
+#                gt_image = np.concatenate((gt_bg, np.invert(gt_bg)), axis=2)
 
-                images.append(image)
-                gt_images.append(gt_image)
+                images.append(image[:576])
+                gt_images.append(gt[:576])
 
             yield np.array(images), np.array(gt_images)
     return get_batches_fn
 
 
-def gen_test_output(sess, logits, keep_prob, image_pl, data_folder, image_shape):
+def gen_test_output(sess, logits, keep_prob, image_pl, image_paths, image_shape):
     """
     Generate test output using the test images
     :param sess: TF session
@@ -110,30 +127,33 @@ def gen_test_output(sess, logits, keep_prob, image_pl, data_folder, image_shape)
     :param image_shape: Tuple - Shape of image
     :return: Output for for each test image
     """
-    for image_file in glob(os.path.join(data_folder, 'image_2', '*.png')):
+    for image_file in image_paths:
         image = scipy.misc.imread(image_file)
         street_im = segment_image(sess, logits, keep_prob, image_pl, image, 
                                   image_shape)
 
         yield os.path.basename(image_file), street_im
-
+import matplotlib.pyplot as plt
 def segment_image(sess, logits, keep_prob, image_pl, image, image_shape):
-    image = scipy.misc.imresize(image, image_shape)
-
-    im_softmax = sess.run(
-        [tf.nn.softmax(logits)],
+    image = image[:image_shape[0], :image_shape[1]]# scipy.misc.imresize(image, image_shape)
+    #plt.imshow(image)
+    im_argmax = sess.run(
+        [tf.argmax(logits, -1)],
         {keep_prob: 1.0, image_pl: [image]})
-    im_softmax = im_softmax[0][:, 1].reshape(image_shape[0], image_shape[1])
-    segmentation = (im_softmax > 0.5).reshape(image_shape[0], image_shape[1], 1)
-    mask = np.dot(segmentation, np.array([[0, 255, 0, 127]]))
-    mask = scipy.misc.toimage(mask, mode="RGBA")
+    #print(len(im_argmax), im_argmax, lgt)
+    im_argmax = np.array(im_argmax).reshape(image_shape[0], image_shape[1])
+    mask_colors = [[0, 255, 0, 127],[255, 0, 0, 127]]
     street_im = scipy.misc.toimage(image)
-    street_im.paste(mask, box=None, mask=mask)
+    for i in range(len(mask_colors)):
+        segmentation = (im_argmax == i).reshape(image_shape[0], image_shape[1], 1)
+        mask = np.dot(segmentation, np.array([mask_colors[i]]))
+        mask = scipy.misc.toimage(mask, mode="RGBA")
+        street_im.paste(mask, box=None, mask=mask)
     
     return np.array(street_im)
     
 
-def save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, input_image):
+def save_inference_samples(runs_dir, image_paths, sess, image_shape, logits, keep_prob, input_image):
     # Make folder for current run
     output_dir = os.path.join(runs_dir, str(time.time()))
     if os.path.exists(output_dir):
@@ -142,8 +162,8 @@ def save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_p
 
     # Run NN on test images and save them to HD
     print('Training Finished. Saving test images to: {}'.format(output_dir))
-    image_outputs = gen_test_output(
-        sess, logits, keep_prob, input_image, os.path.join(data_dir, 'data_road/testing'), image_shape)
+    image_outputs = gen_test_output(sess, logits, keep_prob, input_image, 
+                                    image_paths, image_shape)
     for name, image in image_outputs:
         scipy.misc.imsave(os.path.join(output_dir, name), image)
 

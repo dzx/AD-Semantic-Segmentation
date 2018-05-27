@@ -44,17 +44,20 @@ def load_trained(sess, trained_path):
     return image_input, keep_prob, logits
 
 def run():
-    image_shape = (160, 576)
-    data_dir = './data'
+    image_shape = (576, 800)
+    data_dir = '../'
     runs_dir = './runs'
 
     with tf.Session() as sess:
         trained_path = os.path.join(data_dir, 'trained')
         image_input, keep_prob, logits = load_trained(sess, trained_path)
         print('Trained model loaded. Running inference on test data.')
-#        helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, image_input)
-        helper.process_video(data_dir, sess, image_shape, logits, keep_prob,
-                             image_input)
+        images, masks, [train_idxs, val_idxs] = helper.gen_train_val_folds(os.path.join(data_dir, 'Train'), .1, 42)
+        test_paths = [images[i] for i in val_idxs]
+        helper.save_inference_samples(runs_dir, test_paths, sess, image_shape, logits, 
+                                      keep_prob, image_input)
+#        helper.process_video(data_dir, sess, image_shape, logits, keep_prob,
+#                             image_input)
 
 if __name__ == '__main__':
     run()

@@ -42,7 +42,7 @@ def load_vgg(sess, vgg_path):
     layer7_out = graph.get_tensor_by_name(vgg_layer7_out_tensor_name)
 
     return image_input, keep_prob, layer3_out, layer4_out, layer7_out
-tests.test_load_vgg(load_vgg, tf)
+#tests.test_load_vgg(load_vgg, tf)
 #%%
 
 def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
@@ -76,7 +76,7 @@ def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
                                 kernel_initializer=tf.truncated_normal_initializer(stddev=.01))
        
     return out
-tests.test_layers(layers)
+#tests.test_layers(layers)
 
 
 def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
@@ -100,11 +100,11 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     train_op = optimizer.minimize(cross_entropy_loss + reg_loss)
     
     return logits, train_op, cross_entropy_loss#, reg_loss
-tests.test_optimize(optimize)
+#tests.test_optimize(optimize)
 
 #%%
 def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, input_image,
-             correct_label, keep_prob, learning_rate, iou_oper=None, iou_value=None):
+             correct_label, keep_prob, learning_rate, iou_oper=None, iou_value=None, val_batch_fn=None):
     """
     Train neural network and print out the loss during training.
     :param sess: TF Session
@@ -124,38 +124,63 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
     # Define initializer to initialize/reset running variables
     running_vars_initializer = tf.variables_initializer(var_list=running_vars)
     sess.run(tf.global_variables_initializer())
+    t_bcount, v_bcount = None, None
     for ep in range(epochs):
         sess.run(running_vars_initializer)
+        t_batch = 0
+        xloss = 0
         for imgs, labels in get_batches_fn(batch_size):
             sess.run(train_op, feed_dict={input_image:imgs, correct_label:labels, keep_prob:KP,
                                           learning_rate:LRN_RATE})
-            xloss = sess.run(cross_entropy_loss, feed_dict={input_image:imgs, correct_label:labels, keep_prob:1.,
+            xloss += sess.run(cross_entropy_loss, feed_dict={input_image:imgs, correct_label:labels, keep_prob:1.,
                                           learning_rate:0.})
             if iou_oper is not None:
                 sess.run(iou_oper, feed_dict={input_image:imgs, correct_label:labels, keep_prob:1.,
                                           learning_rate:0.})
-            print("Epoch:{} xent loss:{}".format(ep, xloss))
+            if t_batch % 10 == 0:
+                print("Epoch:{} batch {}/{} xent loss:{}".format(ep, t_batch, t_bcount, xloss/10))
+                xloss = 0
+            t_batch += 1
+        t_bcount = t_batch
         if iou_value is not None:
             ep_iou = sess.run(iou_value)
             print("IOU for epoch {}: {}".format(ep, ep_iou))
-tests.test_train_nn(train_nn)
+        if val_batch_fn:
+            sess.run(running_vars_initializer)
+            v_batch = 0
+            xloss = 0
+            for imgs, labels in val_batch_fn(batch_size):
+                xloss += sess.run(cross_entropy_loss, feed_dict={input_image:imgs, correct_label:labels, keep_prob:1.,
+                                          learning_rate:0.})
+                if iou_oper is not None:
+                    sess.run(iou_oper, feed_dict={input_image:imgs, correct_label:labels, keep_prob:1.,
+                                          learning_rate:0.})
+                if v_batch % 10 == 0:
+                    print("Epoch:{} validation batch {}/{} xent loss:{}".format(ep, v_batch, v_bcount, xloss/10))
+                    xloss = 0
+                v_batch += 1
+            if iou_value is not None:
+                vep_iou = sess.run(iou_value)
+                print("IOU for epoch {}: Training: {} Validation: {}".format(ep, ep_iou, vep_iou))
+            
+#tests.test_train_nn(train_nn)
 
 #%%
 def run():
-    num_classes = 2
+    num_classes = 3
     image_shape = (160, 576)
-    data_dir = './data'
+    data_dir = '../'
     runs_dir = './runs'
     log_dir = './tf_log'
-    tests.test_for_kitti_dataset(data_dir)
-    num_epochs = 25
-    batch_size = 8
+#    tests.test_for_kitti_dataset(data_dir)
+    num_epochs = 14 #25
+    batch_size = 3 #8
     global KP, LRN_RATE
     KP = .5
     LRN_RATE = 1e-4
 
     # Download pretrained vgg model
-    helper.maybe_download_pretrained_vgg(data_dir)
+    #helper.maybe_download_pretrained_vgg(data_dir)
 
     # OPTIONAL: Train and Inference on the cityscapes dataset instead of the Kitti dataset.
     # You'll need a GPU with at least 10 teraFLOPS to train on.
@@ -165,7 +190,9 @@ def run():
         # Path to vgg model
         vgg_path = os.path.join(data_dir, 'vgg')
         # Create function to get batches
-        get_batches_fn = helper.gen_batch_function(os.path.join(data_dir, 'data_road/training'), image_shape)
+        images, masks, [train_idxs, val_idxs] = helper.gen_train_val_folds(os.path.join(data_dir, 'Train'), .1, 42)
+        get_batches_fn = helper.gen_batch_function(images, masks, train_idxs)
+        test_batches_fn = helper.gen_batch_function(images, masks, val_idxs)
 
         # OPTIONAL: Augment Images for better results
         #  https://datascience.stackexchange.com/questions/5224/how-to-prepare-augment-images-for-neural-network
@@ -180,7 +207,7 @@ def run():
         writter = tf.summary.FileWriter(log_dir, sess.graph)
 
         train_nn(sess, num_epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, 
-                 input_image, labels, keep_prob, learning_rate, iou_op, iou_val)
+                 input_image, labels, keep_prob, learning_rate, iou_op, iou_val, test_batches_fn)
         writter.close()
         
         builder = tf.saved_model.builder.SavedModelBuilder(os.path.join(data_dir, 'trained'))
