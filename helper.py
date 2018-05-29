@@ -171,28 +171,57 @@ def segment_image(sess, logits, keep_prob, image_pl, image , num_segments):
     im_argmax = np.array(im_argmax).reshape(image_shape[0], image_shape[1])
     result = []
     for i in range(num_segments):
-        segmentation = (im_argmax == i).reshape(image_shape[0], image_shape[1]).astype('uint8')
+        segmentation = (im_argmax == i).astype('uint8') #.reshape(image_shape[0], image_shape[1])
         result.append(segmentation)
         #plt.imshow(segmentation)
     
     return result
 
-def create_paddings(image_shape, crop):
+def segment_images(sess, logits, keep_prob, image_pl, images , num_segments):
+    #image = image[:image_shape[0], :image_shape[1]]# scipy.misc.imresize(image, image_shape)
+    image_shape = images.shape
+    #print("segment image shape {}".format(image_shape))
+    #plt.imshow(image)
+    im_argmax = sess.run(
+        [tf.argmax(logits, -1)],
+        {keep_prob: 1.0, image_pl: images})
+    #print(len(im_argmax), im_argmax, lgt)
+    im_argmax = np.array(im_argmax).reshape(image_shape[0], image_shape[1], image_shape[2])
+    result = []
+    for i in range(num_segments):
+        segmentation = (im_argmax == i).astype('uint8')
+        result.append(segmentation)
+        #plt.imshow(segmentation)
+    
+    return result
+
+def create_paddings(image_shape, crop, stacks=None):
     padding_t, padding_b, bottom = None, None, None
     if crop[1]: 
         padding_b = np.zeros((crop[1], image_shape[1]), dtype='uint8')
+        if stacks is not None:
+            padding_b = np.array([padding_b for i in range(stacks)])
         bottom = -crop[1]
-    if crop[0]: padding_t = np.zeros((crop[0], image_shape[1]), dtype='uint8')
+    if crop[0]: 
+        padding_t = np.zeros((crop[0], image_shape[1]), dtype='uint8')
+        if stacks is not None:
+            padding_t = np.array([padding_t for i in range(stacks)])
     return padding_t, padding_b, bottom
 
 def pad_segment(segment, padding_t, padding_b):
     if padding_b is not None:
+        if len(padding_b.shape)>2 and padding_b.shape[0] > segment.shape[0]:
+            padding_b = padding_b[:segment.shape[0]]
         if padding_t is not None:
-            return np.concatenate((padding_t, segment, padding_b))
+            if len(padding_t.shape)>2 and padding_t.shape[0] > segment.shape[0]:
+                padding_t = padding_t[:segment.shape[0]]
+            return np.concatenate((padding_t, segment, padding_b), axis=-2)
         else:
-            return np.concatenate((segment, padding_b))
+            return np.concatenate((segment, padding_b), axis=-2)
     elif padding_t is not None:
-        return np.concatenate((padding_t, segment))
+        if len(padding_t.shape)>2 and padding_t.shape[0] > segment.shape[0]:
+            padding_t = padding_t[:segment.shape[0]]
+        return np.concatenate((padding_t, segment), axis=-2)
     else:
         return segment
 

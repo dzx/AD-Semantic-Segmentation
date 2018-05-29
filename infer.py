@@ -55,23 +55,33 @@ def encode(array):
     pil_img.save(buff, format="PNG")
     return base64.b64encode(buff.getvalue()).decode("utf-8")
 
-def annotate_video(file_name, sess, logits, keep_prob, image_pl, image_shape, crop):
+def gen_frame_function(file_name):
     video = skvideo.io.vread(file_name)
+    def get_frames_fn(batch_size):
+        for batch_i in range(0, len(video), batch_size):
+            frames = video[batch_i:batch_i+batch_size]
+            yield frames
+    return get_frames_fn
+
+def annotate_video(file_name, sess, logits, keep_prob, image_pl, image_shape, crop):
+    batch_size = 10
+#    video = skvideo.io.vread(file_name)
+    frame_gen = gen_frame_function(file_name)
 
     answer_key = {}
-    padding_t, padding_b, bottom = helper.create_paddings(image_shape, crop)
+    padding_t, padding_b, bottom = helper.create_paddings(image_shape, crop, stacks=batch_size)
     # Frame numbering starts at 1
     frame = 1
-    for rgb_frame in video:
+    for frames in frame_gen(batch_size):
         #print("frame shape {}".format(rgb_frame.shape))
-        segments = helper.segment_image(sess, logits, keep_prob, image_pl, 
-                                        rgb_frame[crop[0]:bottom], 2)
+        segments = helper.segment_images(sess, logits, keep_prob, image_pl, 
+                                        frames[:,crop[0]:bottom], 2)
         for i in range(len(segments)):
             segments[i] = helper.pad_segment(segments[i], padding_t, padding_b)
-            
-        answer_key[frame] = [encode(segments[1]), encode(segments[0])] # cars, road
+        for i in range(len(frames)):
+            answer_key[frame+i] = [encode(segments[1][i]), encode(segments[0][i])] # cars, road
         # Increment frame
-        frame+=1
+        frame+=len(frames)
     return answer_key
 
 def run():
