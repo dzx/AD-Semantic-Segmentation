@@ -88,12 +88,8 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     :param num_classes: Number of classes to classify
     :return: Tuple of (logits, train_op, cross_entropy_loss)
     """
-    global iou_val, iou_op
     logits = tf.reshape(nn_last_layer, (-1, num_classes), name="logits")
     cross_entropy_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=correct_label))
-    iou_val, iou_op = tf.metrics.mean_iou(labels=tf.argmax(correct_label, axis=-1), 
-                                          predictions=tf.argmax(nn_last_layer, axis=-1), 
-                                          num_classes=num_classes, name="iou_bloc")
     optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
     reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
     reg_loss = sum(reg_losses)
@@ -101,10 +97,31 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     
     return logits, train_op, cross_entropy_loss#, reg_loss
 #tests.test_optimize(optimize)
+    
+def metrics(nn_last_layer, correct_label, num_classes):
+    lbls=tf.argmax(correct_label, axis=-1)
+    preds=tf.argmax(nn_last_layer, axis=-1)
+    iou_val, iou_op = tf.metrics.mean_iou(labels=lbls, predictions=preds, 
+                                          num_classes=num_classes, name="iou_bloc")
+    rcls = [None] * (num_classes-1)
+    rcl_ops = [None] * (num_classes-1)
+    precs = [None] * (num_classes-1)
+    prec_ops = [None] * (num_classes-1)
+    for i in range(num_classes-1):
+        rcls[i], rcl_ops[i] = tf.metrics.recall(labels=tf.equal(lbls, i), 
+                                                  predictions=tf.equal(preds, i), name="iou_bloc")
+        precs[i], prec_ops[i] = tf.metrics.precision(labels=tf.equal(lbls, i), 
+                                                  predictions=tf.equal(preds, i), name="iou_bloc")        
+    return iou_val, iou_op, rcls, rcl_ops, precs, prec_ops
 
+def f_beta(precision, recall, beta=1.):
+    beta_s = beta**2
+    return (1+beta_s) * precision * recall / (beta_s * precision + recall)
+    
 #%%
 def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, input_image,
-             correct_label, keep_prob, learning_rate, iou_oper=None, iou_value=None, val_batch_fn=None):
+             correct_label, keep_prob, learning_rate, iou_value, iou_oper, 
+             rcls, rcl_ops, precs, prec_ops, data_dir, val_batch_fn=None):
     """
     Train neural network and print out the loss during training.
     :param sess: TF Session
@@ -135,7 +152,7 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
             xloss += sess.run(cross_entropy_loss, feed_dict={input_image:imgs, correct_label:labels, keep_prob:1.,
                                           learning_rate:0.})
             if iou_oper is not None:
-                sess.run(iou_oper, feed_dict={input_image:imgs, correct_label:labels, keep_prob:1.,
+                sess.run([iou_oper] + rcl_ops + prec_ops, feed_dict={input_image:imgs, correct_label:labels, keep_prob:1.,
                                           learning_rate:0.})
             if t_batch % 10 == 0:
                 print("Epoch:{} batch {}/{} xent loss:{}".format(ep, t_batch, t_bcount, xloss/10))
@@ -143,8 +160,11 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
             t_batch += 1
         t_bcount = t_batch
         if iou_value is not None:
-            ep_iou = sess.run(iou_value)
-            print("IOU for epoch {}: {}".format(ep, ep_iou))
+            ep_iou, rcl_r, rcl_c, prec_r, prec_c = sess.run([iou_value] + rcls + precs)
+            f_cars = f_beta(prec_c, rcl_c, 2.)
+            f_road = f_beta(prec_r, rcl_r, .5)
+            print("Train for epoch {}: IOU {} F-c {} F-r {} F-avg {}".format(ep, 
+                  ep_iou, f_cars, f_road, (f_cars+f_road)/2))
         if val_batch_fn:
             sess.run(running_vars_initializer)
             v_batch = 0
@@ -153,28 +173,42 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
                 xloss += sess.run(cross_entropy_loss, feed_dict={input_image:imgs, correct_label:labels, keep_prob:1.,
                                           learning_rate:0.})
                 if iou_oper is not None:
-                    sess.run(iou_oper, feed_dict={input_image:imgs, correct_label:labels, keep_prob:1.,
+                    sess.run([iou_oper] + rcl_ops + prec_ops, feed_dict={input_image:imgs, correct_label:labels, keep_prob:1.,
                                           learning_rate:0.})
                 if v_batch % 10 == 0:
                     print("Epoch:{} validation batch {}/{} xent loss:{}".format(ep, v_batch, v_bcount, xloss/10))
                     xloss = 0
                 v_batch += 1
             if iou_value is not None:
-                vep_iou = sess.run(iou_value)
-                print("IOU for epoch {}: Training: {} Validation: {}".format(ep, ep_iou, vep_iou))
-            
+                vep_iou, rcl_r, rcl_c, prec_r, prec_c = sess.run([iou_value] + rcls + precs)
+                vf_cars = f_beta(prec_c, rcl_c, 2.)
+                vf_road = f_beta(prec_r, rcl_r, .5)
+                
+                print("Epoch {}: Training IOU {} F-c {} F-r {} F-avg {}, Validation IOU {} F-c {} F-r {} F-avg {}".format(
+                        ep, ep_iou, f_cars, f_road, (f_cars+f_road)/2, vep_iou, 
+                        vf_cars, vf_road, (vf_cars+vf_road)/2))
+        save_epoch(sess, data_dir, ep)
+        
 #tests.test_train_nn(train_nn)
+def save_epoch(sess, data_dir, epoch):
+    print('Saving epoch {}'.format(epoch))
+    builder = tf.saved_model.builder.SavedModelBuilder(os.path.join(data_dir, 'models', str(epoch)))
+    builder.add_meta_graph_and_variables(sess, ['VGG_Trained'])
+    builder.save()
+        
+
 
 #%%
 def run():
     num_classes = 3
-    image_shape = (160, 576)
-    data_dir = '../'
+    #image_shape = (160, 576)
+    crops = (206, 74) # trim 206 pixels from top and 74 from bottom
+    data_dir = './'
     runs_dir = './runs'
     log_dir = './tf_log'
 #    tests.test_for_kitti_dataset(data_dir)
     num_epochs = 14 #25
-    batch_size = 3 #8
+    batch_size = 5 #3 #8
     global KP, LRN_RATE
     KP = .5
     LRN_RATE = 1e-4
@@ -191,8 +225,8 @@ def run():
         vgg_path = os.path.join(data_dir, 'vgg')
         # Create function to get batches
         images, masks, [train_idxs, val_idxs] = helper.gen_train_val_folds(os.path.join(data_dir, 'Train'), .1, 42)
-        get_batches_fn = helper.gen_batch_function(images, masks, train_idxs)
-        test_batches_fn = helper.gen_batch_function(images, masks, val_idxs)
+        get_batches_fn = helper.gen_batch_function(images, masks, train_idxs, crops)
+        test_batches_fn = helper.gen_batch_function(images, masks, val_idxs, crops)
 
         # OPTIONAL: Augment Images for better results
         #  https://datascience.stackexchange.com/questions/5224/how-to-prepare-augment-images-for-neural-network
@@ -202,18 +236,19 @@ def run():
         labels = tf.placeholder(tf.int32, (None, None, None, num_classes), name='labels')
         learning_rate = tf.placeholder(tf.float32)
         logits, train_op, cross_entropy_loss = optimize(final_layer, labels, learning_rate, num_classes)
-
+        iou_val, iou_op, rcls, rcl_ops, precs, prec_ops = metrics(final_layer, labels, num_classes)
         print("TRAINING")
         writter = tf.summary.FileWriter(log_dir, sess.graph)
 
         train_nn(sess, num_epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, 
-                 input_image, labels, keep_prob, learning_rate, iou_op, iou_val, test_batches_fn)
+                 input_image, labels, keep_prob, learning_rate, iou_val, iou_op, 
+                 rcls, rcl_ops, precs, prec_ops, data_dir, test_batches_fn)
         writter.close()
         
-        builder = tf.saved_model.builder.SavedModelBuilder(os.path.join(data_dir, 'trained'))
-        builder.add_meta_graph_and_variables(sess, ['VGG_Trained'])
-        builder.save()
-        print("Trained model saved")
+#        builder = tf.saved_model.builder.SavedModelBuilder(os.path.join(data_dir, 'trained'))
+#        builder.add_meta_graph_and_variables(sess, ['VGG_Trained'])
+#        builder.save()
+#        print("Trained model saved")
         # Save inference data using helper.save_inference_samples
        # helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, input_image)
 
