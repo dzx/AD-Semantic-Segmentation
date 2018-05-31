@@ -177,14 +177,15 @@ def segment_image(sess, logits, keep_prob, image_pl, image , num_segments):
     
     return result
 
-def segment_images(sess, logits, keep_prob, image_pl, images , num_segments):
+def segment_images(sess, logits, keep_prob, image_pl, images , num_segments):#, options=None, run_metadata=None)
     #image = image[:image_shape[0], :image_shape[1]]# scipy.misc.imresize(image, image_shape)
     image_shape = images.shape
     #print("segment image shape {}".format(image_shape))
     #plt.imshow(image)
+    start_time = time.time()
     im_argmax = sess.run(
-        [tf.argmax(logits, -1)],
-        {keep_prob: 1.0, image_pl: images})
+        [logits], feed_dict={keep_prob: 1.0, image_pl: images}) #, options=options, run_metadata=run_metadata)
+#    print("Inference ran for {} seconds".format(time.time() - start_time))
     #print(len(im_argmax), im_argmax, lgt)
     im_argmax = np.array(im_argmax).reshape(image_shape[0], image_shape[1], image_shape[2])
     result = []
