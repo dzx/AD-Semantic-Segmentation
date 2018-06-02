@@ -52,12 +52,16 @@ def load_trained(sess, trained_path):
     return image_input, keep_prob, logits
 
 # Define encoder function
-def encode(array):
+def encode2(array):
     #print(array.shape)
     pil_img = Image.fromarray(array)
     buff = BytesIO()
     pil_img.save(buff, format="PNG")
     return base64.b64encode(buff.getvalue()).decode("utf-8")
+
+def encode(array):
+        retval, buffer = cv2.imencode('.png', array)
+        return base64.b64encode(buffer).decode("utf-8")
 
 def gen_frame_function(file_name):
     video = skvideo.io.vread(file_name)
@@ -67,10 +71,34 @@ def gen_frame_function(file_name):
             yield frames
     return get_frames_fn
 
+def cv_frame_function(file_name):
+    video = cv2.VideoCapture(file_name)
+#    print("Opened Video")
+    def get_cframes_fn(batch_size):
+        frames = []
+        loaded = 0
+#        print(video.isOpened())
+        while video.isOpened():
+            try:
+                (result, frame) = video.read()
+#                print("got frame")
+                if result:
+                    loaded += 1
+                    frames.append(frame)
+                    if loaded == batch_size:
+                        yield frames
+                        frames = []
+                        loaded = 0
+                else: raise StopIteration()
+            except Exception:
+                video.release()
+                yield frames
+    return get_cframes_fn
+
 def annotate_video(file_name, sess, logits, keep_prob, image_pl, image_shape, crop):
     batch_size = 18
 #    video = skvideo.io.vread(file_name)
-    frame_gen = gen_frame_function(file_name)
+    frame_gen = cv_frame_function(file_name)
 
     answer_key = {}
     padding_t, padding_b, bottom = helper.create_paddings(image_shape, crop, stacks=batch_size)
@@ -81,7 +109,7 @@ def annotate_video(file_name, sess, logits, keep_prob, image_pl, image_shape, cr
     cropped_size = (image_shape[1], image_shape[0]-sum((crop)))
     frame = 1
     for frames in frame_gen(batch_size):
-        #print("frame shape {}".format(rgb_frame.shape))
+#        print("frames shape {}".format(len(frames)))
         frames = [cv2.resize(frame[crop[0]:bottom], dsize=inference_size, interpolation=cv2.INTER_AREA) 
                     for frame in frames]
 #        print(len(frames), frames[0].shape)
