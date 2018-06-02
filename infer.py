@@ -16,6 +16,9 @@ import sys, skvideo.io, json, base64
 import numpy as np
 from PIL import Image
 from io import BytesIO, StringIO
+import time
+import cv2
+
 #from tensorflow.python.client import timeline
 
 # Check TensorFlow Version
@@ -65,7 +68,7 @@ def gen_frame_function(file_name):
     return get_frames_fn
 
 def annotate_video(file_name, sess, logits, keep_prob, image_pl, image_shape, crop):
-    batch_size = 12
+    batch_size = 18
 #    video = skvideo.io.vread(file_name)
     frame_gen = gen_frame_function(file_name)
 
@@ -74,13 +77,22 @@ def annotate_video(file_name, sess, logits, keep_prob, image_pl, image_shape, cr
 #    options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
 #    run_metadata = tf.RunMetadata()
     # Frame numbering starts at 1
+    inference_size = (640,256)
+    cropped_size = (image_shape[1], image_shape[0]-sum((crop)))
     frame = 1
     for frames in frame_gen(batch_size):
         #print("frame shape {}".format(rgb_frame.shape))
+        frames = [cv2.resize(frame[crop[0]:bottom], dsize=inference_size, interpolation=cv2.INTER_AREA) 
+                    for frame in frames]
+#        print(len(frames), frames[0].shape)
         segments = helper.segment_images(sess, logits, keep_prob, image_pl, 
-                                        frames[:,crop[0]:bottom], 2)
+                                        np.asarray(frames), 2)
+#        print("dsize", cropped_size)
         for i in range(len(segments)):
-            segments[i] = helper.pad_segment(segments[i], padding_t, padding_b)
+#            print(segments[i].shape)
+            blown_up = [cv2.resize(frame, dsize=cropped_size, interpolation=cv2.INTER_LINEAR)
+                    for frame in segments[i]]
+            segments[i] = helper.pad_segment(np.asarray(blown_up, dtype='uint8'), padding_t, padding_b)
         for i in range(len(frames)):
             answer_key[frame+i] = [encode(segments[1][i]), encode(segments[0][i])] # cars, road
 #        fetched_timeline = timeline.Timeline(run_metadata.step_stats)
@@ -96,22 +108,31 @@ def run():
     crop = (206, 74)
     data_dir = './'
     runs_dir = './runs'
+    log_dir = './infer_log'
     input_video = sys.argv[-1]
-#    with tf.gfile.GFile('./opt-inf.pb', 'rb') as f:
-#        graph_def_optimized = tf.GraphDef()
-#        graph_def_optimized.ParseFromString(f.read())
-#    G = tf.Graph()
-#    config = tf.ConfigProto()
-#    config.gpu_options.allow_growth = True
-    with tf.Session() as sess: #config=config, graph=G
-        trained_path = os.path.join(data_dir, 'trained')
-        image_input, keep_prob, logits = load_trained(sess, trained_path)
-#        image_input, keep_prob, logits = tf.import_graph_def(graph_def_optimized, 
-#                                                             return_elements=['image_input:0', 'keep_prob:0', 'logits:0'])
-#        print('Trained model loaded. Running inference on test data.')
-        annotations = annotate_video(input_video, sess, logits, keep_prob, image_input,
+    with tf.gfile.GFile('901_opt.pb', 'rb') as f:
+        graph_def_optimized = tf.GraphDef()
+        graph_def_optimized.ParseFromString(f.read())
+    G = tf.Graph()
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    start_time = time.perf_counter()
+    with tf.Session(graph=G) as sess: #config=config, graph=G
+#        trained_path = os.path.join(data_dir, 'trained')
+#         image_input, keep_prob, logits = load_trained(sess, trained_path,
+#                                                     return_elements=['image_input:0', 'keep_prob:0', 'logits:0'])
+        image_input, keep_prob, logits = tf.import_graph_def(graph_def_optimized, 
+                                                             return_elements=['image_input:0', 'keep_prob:0', 'logits:0'])
+        predictions = tf.argmax(logits, axis=-1, name='preds')
+
+#        writter = tf.summary.FileWriter(log_dir, sess.graph)
+
+        print('Trained model loaded at {}.  Running inference on test data.'.format(time.perf_counter() - start_time), file=sys.stderr)
+        annotations = annotate_video(input_video, sess, predictions, keep_prob, image_input,
                                      image_shape, crop)
+#        writter.close()
         print(json.dumps(annotations))
+        print('Done at {}'.format(time.perf_counter() - start_time), file=sys.stderr)
 #        images, _, [_, val_idxs] = helper.gen_train_val_folds(os.path.join(data_dir, 'Train'), .1, 42)
 #        test_paths = [images[i] for i in val_idxs]
 #        helper.save_inference_samples(runs_dir, test_paths, sess, image_shape, logits, 

@@ -8,10 +8,13 @@ import zipfile
 import time
 import tensorflow as tf
 from glob import glob
+import sys
 #from urllib.request import urlretrieve
 #from tqdm import tqdm
 #from moviepy.editor import VideoFileClip
 from sklearn.model_selection import train_test_split
+import jpeg4py as jpeg
+import cv2
 
 
 #class DLProgress(tqdm):
@@ -74,6 +77,34 @@ def gen_train_val_folds(data_folder, tst_size=None, seed=None):
         indices = train_test_split(indices, test_size=tst_size, random_state=seed)
     return image_paths, label_paths, indices
 
+#MANIPULATIONS = ['jpg70', 'jpg90', 'gamma0.8', 'gamma1.2', 'gamma1.8', 'gamma2.3', 'bicubic0.5', 'bicubic0.8', 'bicubic1.5', 'bicubic2.0']
+MANIPULATIONS = ['jpg70', 'jpg90', 'gamma0.8', 'gamma1.2']
+
+
+def random_manipulation(img, manipulation=None):
+
+    if manipulation == None:
+        manipulation = random.choice(MANIPULATIONS)
+
+    if manipulation.startswith('jpg'):
+        quality = int(manipulation[3:])
+        out = BytesIO()
+        im = Image.fromarray(img)
+        im.save(out, format='jpeg', quality=quality)
+        im_decoded = jpeg.JPEG(np.frombuffer(out.getvalue(), dtype=np.uint8)).decode()
+        del out
+        del im
+    elif manipulation.startswith('gamma'):
+        gamma = float(manipulation[5:])
+        # alternatively use skimage.exposure.adjust_gamma
+        # img = skimage.exposure.adjust_gamma(img, gamma)
+        im_decoded = np.uint8(cv2.pow(img / 255., gamma)*255.)
+    elif manipulation.startswith('bicubic'):
+        scale = float(manipulation[7:])
+        im_decoded = cv2.resize(img,(0,0), fx=scale, fy=scale, interpolation = cv2.INTER_CUBIC)
+    else:
+        assert False
+    return im_decoded
 
 def gen_batch_function(image_paths, label_paths, indexes=None, crops=None):
     """
@@ -108,11 +139,16 @@ def gen_batch_function(image_paths, label_paths, indexes=None, crops=None):
                 gt_image_file = label_paths[i]
 
                 image = scipy.misc.imread(image_file) #, image_shape
+               #if (np.random.rand() < 0.5): 
+                #    image = random_manipulation(image)
+                #image = random_manipulation(image,'jpg70')
                 gt_image = scipy.misc.imread(gt_image_file) #, image_shape)
                 gt_image = gt_image[:,:,0]
 
                 gt_road = np.any(np.stack((gt_image == 6, gt_image==7), axis=2), axis=2)
                 gt_vehicles = gt_image == 10
+                #print(np.sum(gt_vehicles), np.sum(gt_image))
+                #tt
                 gt_vehicles[496:] = False
                 gt_objects = np.stack((gt_road, gt_vehicles), axis=2)
                 gt_other = np.logical_not(np.any(gt_objects, axis=2))
@@ -182,10 +218,10 @@ def segment_images(sess, logits, keep_prob, image_pl, images , num_segments):#, 
     image_shape = images.shape
     #print("segment image shape {}".format(image_shape))
     #plt.imshow(image)
-    start_time = time.time()
+    start_time = time.perf_counter()
     im_argmax = sess.run(
         [logits], feed_dict={keep_prob: 1.0, image_pl: images}) #, options=options, run_metadata=run_metadata)
-#    print("Inference ran for {} seconds".format(time.time() - start_time))
+    print("Inference ran for {} seconds".format(time.perf_counter() - start_time), file=sys.stderr)
     #print(len(im_argmax), im_argmax, lgt)
     im_argmax = np.array(im_argmax).reshape(image_shape[0], image_shape[1], image_shape[2])
     result = []
@@ -210,6 +246,7 @@ def create_paddings(image_shape, crop, stacks=None):
     return padding_t, padding_b, bottom
 
 def pad_segment(segment, padding_t, padding_b):
+#    print(segment.shape, padding_t.shape)
     if padding_b is not None:
         if len(padding_b.shape)>2 and padding_b.shape[0] > segment.shape[0]:
             padding_b = padding_b[:segment.shape[0]]
