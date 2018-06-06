@@ -75,8 +75,9 @@ def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
     out = tf.layers.conv2d_transpose(skip2, num_classes, 16, 8, padding='same',
                                 kernel_regularizer=tf.contrib.layers.l2_regularizer(1e-3),
                                 kernel_initializer=tf.truncated_normal_initializer(stddev=.01))
+    final = tf.identity(out, name='final_layer')
        
-    return out
+    return final
 #tests.test_layers(layers)
 
 
@@ -90,18 +91,21 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     :return: Tuple of (logits, train_op, cross_entropy_loss)
     """
     logits = tf.reshape(nn_last_layer, (-1, num_classes), name="logits")
-    cross_entropy_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=correct_label))
+    cross_entropy_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=correct_label),
+                                        name='xent_loss')
+    tf.add_to_collection('xent_loss', cross_entropy_loss)
     optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
     reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
     reg_loss = sum(reg_losses)
-    train_op = optimizer.minimize(cross_entropy_loss + reg_loss)
+    train_op = optimizer.minimize(cross_entropy_loss + reg_loss, name='train_op')
+    tf.add_to_collection('train_op', train_op)
     
     return logits, train_op, cross_entropy_loss#, reg_loss
 #tests.test_optimize(optimize)
     
 def metrics(nn_last_layer, correct_label, num_classes):
     lbls=tf.argmax(correct_label, axis=-1)
-    preds=tf.argmax(nn_last_layer, axis=-1)
+    preds=tf.argmax(nn_last_layer, axis=-1, name='preds')
     iou_val, iou_op = tf.metrics.mean_iou(labels=lbls, predictions=preds, 
                                           num_classes=num_classes, name="iou_bloc")
     rcls = [None] * (num_classes-1)
@@ -122,7 +126,7 @@ def f_beta(precision, recall, beta=1.):
 #%%
 def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, input_image,
              correct_label, keep_prob, learning_rate, iou_value, iou_oper, 
-             rcls, rcl_ops, precs, prec_ops, data_dir, val_batch_fn=None):
+             rcls, rcl_ops, precs, prec_ops, data_dir, val_batch_fn=None, start_epoch=None):
     """
     Train neural network and print out the loss during training.
     :param sess: TF Session
@@ -141,9 +145,9 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
 
     # Define initializer to initialize/reset running variables
     running_vars_initializer = tf.variables_initializer(var_list=running_vars)
-    sess.run(tf.global_variables_initializer())
+    start_epoch = 0 if start_epoch is None else start_epoch + 1
     t_bcount, v_bcount = None, None
-    for ep in range(epochs):
+    for ep in range(start_epoch, epochs):
         sess.run(running_vars_initializer)
         t_batch = 0
         xloss = 0
@@ -197,6 +201,24 @@ def save_epoch(sess, data_dir, epoch):
     builder.add_meta_graph_and_variables(sess, ['VGG_Trained'])
     builder.save()
         
+def load_epoch(sess, data_dir, start_epoch):
+    
+    trained_tag = 'VGG_Trained'
+    trained_input_tensor_name = 'image_input:0'
+    trained_keep_prob_tensor_name = 'keep_prob:0'
+#    trained_logits_tensor_name = 'logits:0'
+    tf.saved_model.loader.load(sess, [trained_tag], os.path.join(data_dir, 'models', str(start_epoch)))
+    graph = tf.get_default_graph()
+    train_op = graph.get_collection('train_op')[0]
+    cross_entropy_loss = graph.get_collection('xent_loss')[0]
+    input_image = graph.get_tensor_by_name(trained_input_tensor_name)
+    labels = graph.get_tensor_by_name('labels:0')
+    keep_prob = graph.get_tensor_by_name(trained_keep_prob_tensor_name)
+    learning_rate = graph.get_tensor_by_name('lrn_rate:0')
+    final_layer = graph.get_tensor_by_name('final_layer:0')
+    graph.clear_collection(tf.GraphKeys.LOCAL_VARIABLES)
+    
+    return (train_op, cross_entropy_loss, input_image, labels, keep_prob, learning_rate, final_layer)
 
 
 #%%
@@ -208,11 +230,12 @@ def run():
     runs_dir = './runs'
     log_dir = './tf_log'
 #    tests.test_for_kitti_dataset(data_dir)
-    num_epochs = 14 #25
-    batch_size = 5 #3 #8
+    num_epochs = 25
+    batch_size = 4 #3 #8
     global KP, LRN_RATE
     KP = .5
     LRN_RATE = 1e-4
+    start_epoch = 13
 
     # Download pretrained vgg model
     #helper.maybe_download_pretrained_vgg(data_dir)
@@ -225,25 +248,33 @@ def run():
         # Path to vgg model
         vgg_path = os.path.join(data_dir, 'vgg')
         # Create function to get batches
-        images, masks, [train_idxs, val_idxs] = helper.gen_train_val_folds(os.path.join(data_dir, 'Train'), .1, 42)
+        images, masks, [train_idxs, val_idxs] = helper.gen_train_val_folds(os.path.join(data_dir, 'Train'), .01, 42)
         get_batches_fn = helper.gen_batch_function(images, masks, train_idxs, crops)
         test_batches_fn = helper.gen_batch_function(images, masks, val_idxs, crops)
 
         # OPTIONAL: Augment Images for better results
         #  https://datascience.stackexchange.com/questions/5224/how-to-prepare-augment-images-for-neural-network
 
-        input_image, keep_prob, layer3_out, layer4_out, layer7_out = load_vgg(sess, vgg_path)
-        final_layer = layers(layer3_out, layer4_out, layer7_out, num_classes)
-        labels = tf.placeholder(tf.int32, (None, None, None, num_classes), name='labels')
-        learning_rate = tf.placeholder(tf.float32)
-        logits, train_op, cross_entropy_loss = optimize(final_layer, labels, learning_rate, num_classes)
+        if start_epoch is None:
+            input_image, keep_prob, layer3_out, layer4_out, layer7_out = load_vgg(sess, vgg_path)
+            final_layer = layers(layer3_out, layer4_out, layer7_out, num_classes)
+            labels = tf.placeholder(tf.int32, (None, None, None, num_classes), name='labels')
+            learning_rate = tf.placeholder(tf.float32, name='lrn_rate')
+            logits, train_op, cross_entropy_loss = optimize(final_layer, labels, 
+                                                            learning_rate, num_classes)
+            sess.run(tf.global_variables_initializer())
+        else:
+            (train_op, cross_entropy_loss, input_image, labels, keep_prob, learning_rate, 
+             final_layer) = load_epoch(sess, data_dir, start_epoch)
+#            print(input_image, labels, keep_prob, learning_rate, final_layer)
+            
         iou_val, iou_op, rcls, rcl_ops, precs, prec_ops = metrics(final_layer, labels, num_classes)
         print("TRAINING")
-        writter = tf.summary.FileWriter(log_dir, sess.graph)
 
+        writter = tf.summary.FileWriter(log_dir, sess.graph)
         train_nn(sess, num_epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, 
                  input_image, labels, keep_prob, learning_rate, iou_val, iou_op, 
-                 rcls, rcl_ops, precs, prec_ops, data_dir, test_batches_fn)
+                 rcls, rcl_ops, precs, prec_ops, data_dir, test_batches_fn, start_epoch)
         writter.close()
         
 #        builder = tf.saved_model.builder.SavedModelBuilder(os.path.join(data_dir, 'trained'))

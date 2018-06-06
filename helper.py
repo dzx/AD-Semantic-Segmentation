@@ -15,6 +15,8 @@ import sys
 from sklearn.model_selection import train_test_split
 import jpeg4py as jpeg
 import cv2
+from io import BytesIO
+from PIL import Image
 
 
 #class DLProgress(tqdm):
@@ -70,8 +72,11 @@ def gen_train_val_folds(data_folder, tst_size=None, seed=None):
     :param seed: random seed for set splitting
     :return: image_paths, label_paths, indices or (train, validation) indices if splitting
     """
-    image_paths = glob(os.path.join(data_folder, 'CameraRGB', '*.png'))
-    label_paths = glob(os.path.join(data_folder, 'CameraSeg', '*.png'))
+    img_files = os.listdir(os.path.join(data_folder, 'CameraRGB'))
+    image_paths = [os.path.join(data_folder, 'CameraRGB', i) for i in img_files]
+    label_paths = [os.path.join(data_folder, 'CameraSeg', i) for i in img_files]
+    #image_paths = glob(os.path.join(data_folder, 'CameraRGB', '*.png'))
+    #label_paths = glob(os.path.join(data_folder, 'CameraSeg', '*.png'))
     indices = [i for i in range(len(image_paths))]
     if tst_size != None:
         indices = train_test_split(indices, test_size=tst_size, random_state=seed)
@@ -102,6 +107,7 @@ def random_manipulation(img, manipulation=None):
     elif manipulation.startswith('bicubic'):
         scale = float(manipulation[7:])
         im_decoded = cv2.resize(img,(0,0), fx=scale, fy=scale, interpolation = cv2.INTER_CUBIC)
+        cv2.resize()
     else:
         assert False
     return im_decoded
@@ -139,8 +145,8 @@ def gen_batch_function(image_paths, label_paths, indexes=None, crops=None):
                 gt_image_file = label_paths[i]
 
                 image = scipy.misc.imread(image_file) #, image_shape
-               #if (np.random.rand() < 0.5): 
-                #    image = random_manipulation(image)
+#                if (np.random.rand() < 0.5): 
+#                    image = random_manipulation(image)
                 #image = random_manipulation(image,'jpg70')
                 gt_image = scipy.misc.imread(gt_image_file) #, image_shape)
                 gt_image = gt_image[:,:,0]
@@ -156,9 +162,26 @@ def gen_batch_function(image_paths, label_paths, indexes=None, crops=None):
 #                gt_bg = np.all(gt_image == background_color, axis=2)
 #                gt_bg = gt_bg.reshape(*gt_bg.shape, 1)
 #                gt_image = np.concatenate((gt_bg, np.invert(gt_bg)), axis=2)
-
-                images.append(image[crop_t:crop_b]) #64:576
-                gt_images.append(gt[crop_t:crop_b]) #64:576
+                image = image[crop_t:crop_b]                
+                gt = gt[crop_t:crop_b]
+                
+                '''                                 
+                
+                #scale = 0.0; dims = (240,600) 
+                scale = 0.6; dims = (0,0) #scale 0.75 (240x600) puca
+                
+                image = cv2.resize(image,dims, fx=scale, fy=scale, interpolation = cv2.INTER_CUBIC)
+                              
+                gt_road = cv2.resize(gt[:,:,0].astype('uint8'),dims, fx=scale, fy=scale, interpolation = cv2.INTER_CUBIC).astype(bool)                        
+                gt_vehicles = cv2.resize(gt[:,:,1].astype('uint8'),dims, fx=scale, fy=scale, interpolation = cv2.INTER_CUBIC).astype(bool)
+                gt_other = cv2.resize(gt[:,:,2].astype('uint8'),dims, fx=scale, fy=scale, interpolation = cv2.INTER_CUBIC).astype(bool)
+                
+                gt = np.stack((gt_road, gt_vehicles, gt_other), axis=2)
+                
+                '''
+                
+                images.append(image) #64:576
+                gt_images.append(gt) #64:576
 
             yield np.array(images), np.array(gt_images)
     return get_batches_fn
@@ -182,6 +205,9 @@ def gen_test_output(sess, logits, keep_prob, image_pl, image_paths, image_shape,
 
         yield os.path.basename(image_file), street_im
 def anotate_image(sess, logits, keep_prob, image_pl, image, image_shape, crop):
+    """
+    Probably broken
+    """
     mask_colors = [[0, 255, 0, 127],[255, 0, 0, 127]]    
     padding_t, padding_b, bottom = create_paddings(image_shape, crop)
     street_im = scipy.misc.toimage(image)

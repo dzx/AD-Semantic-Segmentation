@@ -56,7 +56,7 @@ def encode2(array):
     #print(array.shape)
     pil_img = Image.fromarray(array)
     buff = BytesIO()
-    pil_img.save(buff, format="PNG")
+    pil_img.save(buff, format="PNG", compress_level=1)
     return base64.b64encode(buff.getvalue()).decode("utf-8")
 
 def encode(array):
@@ -77,22 +77,21 @@ def cv_frame_function(file_name):
     def get_cframes_fn(batch_size):
         frames = []
         loaded = 0
+        loading = True
 #        print(video.isOpened())
-        while video.isOpened():
-            try:
-                (result, frame) = video.read()
-#                print("got frame")
-                if result:
-                    loaded += 1
-                    frames.append(frame)
-                    if loaded == batch_size:
-                        yield frames
-                        frames = []
-                        loaded = 0
-                else: raise StopIteration()
-            except Exception:
+        while video.isOpened() and loading:
+            (loading, frame) = video.read()
+            if loading:
+                loaded += 1
+                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                if loaded == batch_size:
+                    yield frames
+                    frames = []
+                    loaded = 0
+            else:
                 video.release()
-                yield frames
+        if len(frames):
+            yield frames
     return get_cframes_fn
 
 def annotate_video(file_name, sess, logits, keep_prob, image_pl, image_shape, crop):
