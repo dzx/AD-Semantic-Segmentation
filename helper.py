@@ -112,7 +112,7 @@ def random_manipulation(img, manipulation=None):
         assert False
     return im_decoded
 
-def gen_batch_function(image_paths, label_paths, indexes=None, crops=None):
+def gen_batch_function(image_paths, label_paths, indexes=None, crops=None, downsample=None):
     """
     Generate function to create batches of training data
     :param image_paths: Paths of all images
@@ -165,20 +165,21 @@ def gen_batch_function(image_paths, label_paths, indexes=None, crops=None):
                 image = image[crop_t:crop_b]                
                 gt = gt[crop_t:crop_b]
                 
-                '''                                 
+                                                 
                 
-                #scale = 0.0; dims = (240,600) 
-                scale = 0.6; dims = (0,0) #scale 0.75 (240x600) puca
+                #scale = 0.0; dims = (240,600)
+                if downsample != None:
+                    dims = (0,0) #scale 0.75 (240x600) puca
                 
-                image = cv2.resize(image,dims, fx=scale, fy=scale, interpolation = cv2.INTER_CUBIC)
+                    image = cv2.resize(image,dims, fx=downsample, fy=downsample, interpolation = cv2.INTER_AREA)
                               
-                gt_road = cv2.resize(gt[:,:,0].astype('uint8'),dims, fx=scale, fy=scale, interpolation = cv2.INTER_CUBIC).astype(bool)                        
-                gt_vehicles = cv2.resize(gt[:,:,1].astype('uint8'),dims, fx=scale, fy=scale, interpolation = cv2.INTER_CUBIC).astype(bool)
-                gt_other = cv2.resize(gt[:,:,2].astype('uint8'),dims, fx=scale, fy=scale, interpolation = cv2.INTER_CUBIC).astype(bool)
+                    gt_road = cv2.resize(gt[:,:,0].astype('uint8'),dims, fx=downsample, fy=downsample, interpolation = cv2.INTER_AREA).astype(bool)
+                    gt_vehicles = cv2.resize(gt[:,:,1].astype('uint8'),dims, fx=downsample, fy=downsample, interpolation = cv2.INTER_AREA).astype(bool)
+                    gt_other = cv2.resize(gt[:,:,2].astype('uint8'),dims, fx=downsample, fy=downsample, interpolation = cv2.INTER_AREA).astype(bool)
                 
-                gt = np.stack((gt_road, gt_vehicles, gt_other), axis=2)
+                    gt = np.stack((gt_road, gt_vehicles, gt_other), axis=2)
                 
-                '''
+                
                 
                 images.append(image) #64:576
                 gt_images.append(gt) #64:576
