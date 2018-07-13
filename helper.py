@@ -214,13 +214,18 @@ def anotate_image(sess, logits, keep_prob, image_pl, image, image_shape, crop):
     street_im = scipy.misc.toimage(image)
     segments = segment_image(sess, logits, keep_prob, image_pl, image[crop[0]:bottom], 
                              len(mask_colors))
-    for i in range(len(mask_colors)):
+    for i in range(len(segments)):
         segments[i] = pad_segment(segments[i], padding_t, padding_b)
+    
+    return mask_image(mask_colors, street_im, segments)
+    
+def mask_image(mask_colors, image, segments):
+    for i in range(len(mask_colors)):
         mask = np.dot(np.expand_dims(segments[i], -1), np.array([mask_colors[i]]))
         mask = scipy.misc.toimage(mask, mode="RGBA")
-        street_im.paste(mask, box=None, mask=mask)
-    return street_im
-    
+        image.paste(mask, box=None, mask=mask)
+    return image
+ 
 #import matplotlib.pyplot as plt
 def segment_image(sess, logits, keep_prob, image_pl, image , num_segments):
     #image = image[:image_shape[0], :image_shape[1]]# scipy.misc.imresize(image, image_shape)
