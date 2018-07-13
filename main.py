@@ -108,7 +108,8 @@ def metrics(nn_last_layer, correct_label, num_classes, f_score_betas=None):
     lbls=tf.argmax(correct_label, axis=-1)
     preds=tf.argmax(nn_last_layer, axis=-1, name='preds')
     iou_val, iou_op = tf.metrics.mean_iou(labels=lbls, predictions=preds, 
-                                          num_classes=num_classes, name="iou_bloc")
+                                          num_classes=num_classes, name="iou_bloc",
+                                          metrics_collections='iou_vals', updates_collections='iou_ops')
     t = tf.summary.scalar('mean_IOU', iou_val)
     if f_score_betas==None:
         f_score_betas = [1.] * (num_classes-1)
@@ -237,7 +238,7 @@ def load_epoch(sess, data_dir, start_epoch):
     keep_prob = graph.get_tensor_by_name(trained_keep_prob_tensor_name)
     learning_rate = graph.get_tensor_by_name('lrn_rate:0')
     final_layer = graph.get_tensor_by_name('final_layer:0')
-    graph.clear_collection(tf.GraphKeys.LOCAL_VARIABLES)
+#    graph.clear_collection(tf.GraphKeys.LOCAL_VARIABLES)
     
     return (train_op, cross_entropy_loss, input_image, labels, keep_prob, learning_rate, final_layer)
 
@@ -252,7 +253,7 @@ def run():
     log_dir = './tf_log'
     log_suffix = '_ds8'
 #    tests.test_for_kitti_dataset(data_dir)
-    num_epochs = 14
+    num_epochs = 28
     batch_size = 5 #4 #3 #8
     global KP, LRN_RATE
     KP = .5
@@ -285,12 +286,19 @@ def run():
             logits, train_op, cross_entropy_loss = optimize(final_layer, labels, 
                                                             learning_rate, num_classes)
             sess.run(tf.global_variables_initializer())
+            saver = tf.train.Saver()
+            saver.export_meta_graph('./tmp_model.meta')
+            iou_op, rcl_ops, prec_ops = metrics(final_layer, labels, num_classes)
         else:
+#            saver = tf.train.import_meta_graph('./tmp_model.meta')
             (train_op, cross_entropy_loss, input_image, labels, keep_prob, learning_rate, 
              final_layer) = load_epoch(sess, data_dir, start_epoch)
-#            print(input_image, labels, keep_prob, learning_rate, final_layer)
+            print(input_image, labels, keep_prob, learning_rate, final_layer)
+            graph = tf.get_default_graph()
+            iou_op = graph.get_tensor_by_name('iou_bloc/AssignAdd:0')
+            rcl_ops = [graph.get_tensor_by_name('iou_bloc_1/update_op:0'), graph.get_tensor_by_name('iou_bloc_3/update_op:0')]
+            prec_ops = [graph.get_tensor_by_name('iou_bloc_2/update_op:0'), graph.get_tensor_by_name('iou_bloc_4/update_op:0')]
             
-        iou_op, rcl_ops, prec_ops = metrics(final_layer, labels, num_classes)
         print("TRAINING")
 
         train_writter = tf.summary.FileWriter(log_dir+'/train'+log_suffix, sess.graph)
@@ -300,7 +308,8 @@ def run():
                  prec_ops, data_dir, train_writter, test_batches_fn, val_writter, start_epoch)
         train_writter.close()
         val_writter.close()
-        
+#        saver2 = tf.train.Saver()
+#        saver2.save(sess, './tmp_model', write_meta_graph=False)
 #        builder = tf.saved_model.builder.SavedModelBuilder(os.path.join(data_dir, 'trained'))
 #        builder.add_meta_graph_and_variables(sess, ['VGG_Trained'])
 #        builder.save()
